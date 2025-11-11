@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<link href="styles.css" rel="stylesheet" type="text/css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Download Gallery</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--accent:#06b6d4;--muted:#9aa4b2;--glass: rgba(255,255,255,0.03)}
+    html, body {
+  margin: 0;
+  font-family: Inter, system-ui, Segoe UI, Roboto, "Helvetica Neue", Arial;
+  color: #e6eef6;
+  background: linear-gradient(180deg, #071126 0%, #02121a 100%);
+  min-height: 100%;
+  overflow-y: auto;
+}
+    .wrap{max-width:1100px;margin:28px auto;padding:20px}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    h1{margin:0;font-size:20px}
+    .sub{color:var(--muted);font-size:13px}
+
+    .controls{display:flex;gap:12px;align-items:center}
+    button{background:var(--accent);color:#042a2f;border:0;padding:8px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+    button.ghost{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);padding:8px 10px}
+
+    .admin-panel{margin-top:18px;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:16px;border-radius:12px;display:none}
+    .uploader{display:flex;gap:14px;align-items:center}
+    .drop{flex:1;padding:18px;border-radius:10px;border:2px dashed rgba(255,255,255,0.03);background:var(--glass);min-height:90px;display:flex;align-items:center;justify-content:center;color:var(--muted)}
+    input[type=file]{display:none}
+    .meta{display:flex;gap:8px;flex-direction:column;min-width:220px}
+    .meta input{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+
+    .gallery{margin-top:18px;display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:10px;border-radius:10px;display:flex;flex-direction:column;gap:8px}
+    .thumb{width:100%;aspect-ratio:4/3;border-radius:8px;object-fit:cover;background:#041823}
+    .card .title{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+    .small{font-size:12px;color:#a7b7c6}
+
+    footer{margin-top:28px;color:var(--muted);font-size:13px;text-align:center}
+
+    /* modal */
+    .modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);}
+    .panel{background:#041420;padding:18px;border-radius:12px;min-width:320px}
+    .hidden{display:none}
+
+    @media (max-width:560px){.uploader{flex-direction:column}.meta{min-width:unset}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Photo gallery of Chason</h1>
+        <div class="sub">Only you can upload. Everyone can view & download.</div>
+      </div>
+      <div class="controls">
+        <div id="status" class="small"></div>
+        <button id="loginBtn">Admin login</button>
+        <button id="logoutBtn" class="ghost hidden">Logout</button>
+      </div>
+    </header>
+
+    <div id="adminPanel" class="admin-panel" aria-hidden="true">
+      <div class="uploader">
+        <label class="drop" id="dropZone">Drag & drop images here or <button id="pickBtn" class="ghost" style="margin-left:8px">choose</button>
+          <input id="fileInput" type="file" accept="image/*" multiple>
+        </label>
+        <div class="meta">
+          <input id="defaultTitle" placeholder="Default title for uploads (optional)">
+			<input id="albumName" placeholder="Album name (e.g. Travel, Family)">
+          <div style="display:flex;gap:8px">
+            <button id="uploadBtn">Upload selected</button>
+            <button id="clearAll" class="ghost">Clear all photos</button>
+          </div>
+          <div class="small">Tip: use JPG/PNG. Each image is stored locally in the site's database.</div>
+        </div>
+      </div>
+    </div>
+<div style="margin:16px 0;">
+  <label for="albumFilter">Show album: </label>
+  <select id="albumFilter">
+    <option value="all">All</option>
+  </select>
+</div>
+
+    <section>
+      <div class="gallery" id="gallery" aria-live="polite"></div>
+    </section>
+
+    <footer>
+      thank you for looking!!
+    </footer>
+  </div>
+
+  <!-- admin password is configured below. CHANGE IT before you use this file publicly. -->
+  <script>
+    // ====== CONFIGURE ======
+    const ADMIN_PASSWORD = 'Chason200908$'; // <<-- change this to a strong password before using
+    const STORAGE_KEY_LOGGED = 'photo_gallery_logged';
+    // =======================
+
+    // Simple (client-side) protection: not secure. See instructions at bottom for secure options.
+
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const status = document.getElementById('status');
+    const adminPanel = document.getElementById('adminPanel');
+
+    // indexedDB wrapper
+    const DB_NAME = 'photo_gallery_db';
+    const STORE = 'photos';
+    let db;
+    function openDB(){
+      return new Promise((res,rej)=>{
+        const r = indexedDB.open(DB_NAME,1);
+        r.onupgradeneeded = e => {
+          const d = e.target.result;
+          if(!d.objectStoreNames.contains(STORE)){
+            d.createObjectStore(STORE, {keyPath: 'id', autoIncrement: true});
+          }
+        };
+        r.onsuccess = e => { db = e.target.result; res(db); };
+        r.onerror = e => rej(e);
+      });
+    }
+
+    function addPhoto(blob, title, album){
+  return new Promise((res,rej)=>{
+    const tx = db.transaction(STORE,'readwrite');
+    const s = tx.objectStore(STORE);
+    const item = {blob, title: title||'', album: album || 'General', ts: Date.now()};
+    const req = s.add(item);
+    req.onsuccess = ()=>res(req.result);
+    req.onerror = e=>rej(e);
+  });
+}
+    function listPhotos(){
+      return new Promise((res,rej)=>{
+        const tx = db.transaction(STORE,'readonly');
+        const s = tx.objectStore(STORE);
+        const req = s.getAll();
+        req.onsuccess = ()=>res(req.result || []);
+        req.onerror = e=>rej(e);
+      });
+    }
+    function clearPhotos(){
+      return new Promise((res,rej)=>{
+        const tx = db.transaction(STORE,'readwrite');
+        const s = tx.objectStore(STORE);
+        const req = s.clear();
+        req.onsuccess = ()=>res();
+        req.onerror = e=>rej(e);
+      });
+    }
+
+    // UI helpers
+    async function refreshGallery(){
+  const gallery = document.getElementById('gallery');
+  gallery.innerHTML = '';
+  const items = await listPhotos();
+  if(items.length === 0){
+    gallery.innerHTML = '<div class="small" style="grid-column:1/-1;color:var(--muted);padding:18px;background:var(--glass);border-radius:8px">No photos yet.</div>';
+    return;
+  }
+
+  // collect album names
+  const albums = Array.from(new Set(items.map(it => it.album || 'General'))).sort();
+  const filter = document.getElementById('albumFilter');
+  const currentAlbum = filter.value;
+  filter.innerHTML = '<option value="all">All</option>' + albums.map(a => `<option value="${a}">${a}</option>`).join('');
+  filter.value = currentAlbum || 'all';
+
+  // filter by album
+  const filtered = currentAlbum === 'all' ? items : items.filter(it => (it.album || 'General') === currentAlbum);
+
+  // sort by newest first
+  filtered.sort((a,b)=>b.ts - a.ts);
+  for(const it of filtered){
+    const url = URL.createObjectURL(it.blob);
+    const card = document.createElement('div'); 
+    card.className = 'card';
+    card.innerHTML = `
+      <img class="thumb" src="${url}" alt="${escapeHtml(it.title||'photo')}">
+      <div class="title"><span>${escapeHtml(it.title||'Untitled')}</span><span class="small">${formatBytes(it.blob.size)}</span></div>
+      <div class="small" style="opacity:0.7">Album: ${escapeHtml(it.album || 'General')}</div>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+        <a class="small" download="${sanitizeFileName(it.title||'photo')}.jpg" href="#">Download</a>
+        <div><button class="ghost" data-id="${it.id}" title="Delete (admin only)">Delete</button></div>
+      </div>`;
+    const a = card.querySelector('a');
+    a.href = url;
+    const del = card.querySelector('button');
+    del.addEventListener('click', async ()=>{
+      if(!isLogged()) return alert('Admin only');
+      const tx = db.transaction(STORE,'readwrite');
+      const s = tx.objectStore(STORE);
+      s.delete(Number(del.dataset.id));
+      tx.oncomplete = ()=>{ URL.revokeObjectURL(url); refreshGallery(); };
+    });
+    gallery.appendChild(card);
+  }
+}
+
+    function escapeHtml(s){ return (s+'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m]); }
+    function sanitizeFileName(s){ return (s||'photo').replace(/[^a-z0-9\-_. ]/gi,'').slice(0,50) }
+    function formatBytes(n){ if(n<1024) return n+' B'; if(n<1024*1024) return (n/1024).toFixed(1)+' KB'; return (n/1024/1024).toFixed(2)+' MB'; }
+
+    function isLogged(){ return localStorage.getItem(STORAGE_KEY_LOGGED) === '1'; }
+    function setLogged(v){ if(v) localStorage.setItem(STORAGE_KEY_LOGGED,'1'); else localStorage.removeItem(STORAGE_KEY_LOGGED); updateUI(); }
+
+    function updateUI(){
+      const logged = isLogged();
+      adminPanel.style.display = logged ? 'block' : 'none';
+      logoutBtn.classList.toggle('hidden', !logged);
+      loginBtn.textContent = logged ? 'Admin (you are signed in)' : 'Admin login';
+      status.textContent = logged ? 'Admin mode' : '';
+    }
+
+    // login flow
+    loginBtn.addEventListener('click', ()=>{
+      const p = prompt('Enter admin password:');
+      if(p===null) return;
+      if(p === ADMIN_PASSWORD){ setLogged(true); alert('Welcome, admin.'); }
+      else alert('Wrong password.');
+    });
+    logoutBtn.addEventListener('click', ()=>{ setLogged(false); alert('Logged out'); });
+
+    // uploader
+    const fileInput = document.getElementById('fileInput');
+    const pickBtn = document.getElementById('pickBtn');
+    const dropZone = document.getElementById('dropZone');
+    const uploadBtn = document.getElementById('uploadBtn');
+    const clearAllBtn = document.getElementById('clearAll');
+    const defaultTitle = document.getElementById('defaultTitle');
+
+    pickBtn.addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', ()=>{ selectedFiles = Array.from(fileInput.files); showSelectedCount(); });
+
+    let selectedFiles = [];
+    function showSelectedCount(){ uploadBtn.textContent = selectedFiles.length? `Upload ${selectedFiles.length}` : 'Upload selected'; }
+
+    dropZone.addEventListener('dragover', e=>{ e.preventDefault(); dropZone.style.borderColor = 'rgba(255,255,255,0.12)'; });
+    dropZone.addEventListener('dragleave', e=>{ dropZone.style.borderColor = 'rgba(255,255,255,0.03)'; });
+    dropZone.addEventListener('drop', e=>{
+      e.preventDefault(); dropZone.style.borderColor = 'rgba(255,255,255,0.03)';
+      selectedFiles = Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/'));
+      showSelectedCount();
+    });
+
+    uploadBtn.addEventListener('click', async ()=>{
+      if(!isLogged()) return alert('Admin only');
+      if(selectedFiles.length===0) return alert('Pick or drop images first');
+      uploadBtn.disabled = true;
+      const def = defaultTitle.value;
+      for(const f of selectedFiles){
+        // convert to blob (already a blob/file) — optionally resize here
+        const album = document.getElementById('albumName').value;
+await addPhoto(f, def || f.name, album);
+      }
+      selectedFiles = [];
+      fileInput.value = '';
+      showSelectedCount();
+      await refreshGallery();
+      uploadBtn.disabled = false;
+    });
+
+    clearAllBtn.addEventListener('click', async ()=>{
+      if(!isLogged()) return alert('Admin only');
+      if(!confirm('Delete ALL photos? This cannot be undone in this demo.')) return;
+      await clearPhotos();
+      refreshGallery();
+    });
+
+    // init
+    (async ()=>{
+      await openDB();
+      updateUI();
+      await refreshGallery();
+    })();
+document.getElementById('albumFilter').addEventListener('change', refreshGallery);
+  </script>
+
+  <!-- IMPORTANT NOTES (read before using publicly):
+    * This is a single-file static demo. "Admin protection" is a client-side prompt that compares to the
+      'ADMIN_PASSWORD' string embedded in the page: this is NOT secure. Anyone with access to the file or
+      browser devtools can find/change it.
+    * For a secure real site you should:
+      - Host images on a server or cloud storage (S3, Cloud Storage) instead of IndexedDB.
+      - Require server-side authentication (username/password, OAuth) and only allow upload endpoints to authorized users.
+      - Serve the site over HTTPS and protect admin pages with server-side sessions.
+    * If you want, I can: provide a minimal Node/Express backend with file uploads and simple username/password auth,
+      or show how to connect to Netlify/Cloudflare Functions + S3 to store images securely.
+  -->
+</body>
+</html>
